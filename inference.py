@@ -9,11 +9,11 @@ from typing import Any, Dict, List
 import httpx
 from openai import OpenAI
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "").rstrip("/")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-API_KEY = HF_TOKEN or OPENAI_API_KEY
+API_BASE_URL = os.getenv("API_BASE_URL", "<your-active-endpoint>").rstrip("/")
+MODEL_NAME = os.getenv("MODEL_NAME", "<your-active-model>")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME")
 
 IMAGE_NAME = os.environ.get("IMAGE_NAME", "cascadeenv:latest")
 BENCHMARK = "cascadeenv"
@@ -92,8 +92,7 @@ remove_post, downrank_post, add_friction, suspend_account, shadow_ban_account,
 remove_account, disconnect_accounts, observe, submit_report
 """
 
-    if not API_BASE_URL or not API_KEY:
-        _eprint("[DEBUG] missing API_BASE_URL or HF_TOKEN/OPENAI_API_KEY")
+    if not API_BASE_URL or not HF_TOKEN:
         return {"action_type": "observe", "reasoning": "missing credentials"}
 
     try:
@@ -309,8 +308,10 @@ async def run_task(client: OpenAI, task_id: str, env_base_url: str) -> float:
 
 async def main() -> None:
     env_base = os.environ.get("CASCADEENV_URL", "http://127.0.0.1:7860").rstrip("/")
-    base = API_BASE_URL or "https://api.openai.com/v1"
-    client = OpenAI(base_url=base, api_key=API_KEY or "dummy")
+    if not HF_TOKEN:
+        print("HF_TOKEN is required", file=sys.stderr, flush=True)
+        raise SystemExit(2)
+    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     _eprint(f"[DEBUG] IMAGE_NAME={IMAGE_NAME} CASCADEENV_URL={env_base}")
 
