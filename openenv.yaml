@@ -1,0 +1,37 @@
+name: cascadeenv
+version: "1.0.0"
+description: Social graph env for moderation-style agents (cascade risk, 3 tasks).
+
+author: "your-hf-username"
+license: MIT
+tags:
+  - openenv
+  - social-media
+  - content-moderation
+  - trust-and-safety
+  - misinformation
+
+tasks:
+  - id: task1_health_misinfo
+    name: "Health Misinformation Spread"
+    difficulty: easy
+    max_steps: 20
+    reward_range: [0.0, 1.0]
+
+  - id: task2_coordinated_harassment
+    name: "Coordinated Harassment Campaign"
+    difficulty: medium
+    max_steps: 30
+    reward_range: [0.0, 1.0]
+
+  - id: task3_radicalization_pipeline
+    name: "Slow Radicalization Pipeline"
+    difficulty: hard
+    max_steps: 50
+    reward_range: [0.0, 1.0]
+
+api:
+  reset: POST /reset
+  step: POST /step
+  state: GET /state
+  validate: GET /validate
