@@ -2,13 +2,12 @@ name: cascadeenv
 version: "1.0.0"
 description: Social graph env for moderation-style agents (cascade risk, 3 tasks).
 
-author: "your-hf-username"
+author: "chanchan9"
 license: MIT
 tags:
   - openenv
   - social-media
   - content-moderation
-  - trust-and-safety
   - misinformation
 
 tasks:
