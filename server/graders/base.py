@@ -73,7 +73,8 @@ class CascadeGrader:
             + reward.overcorrection_penalty
             + reward.too_late_penalty
         )
-        reward.total = max(0.0, min(1.0, positive - negative))
+        raw_total = positive - negative
+        reward.total = max(0.001, min(0.999, raw_total))
         reward.step_reward = reward.total
         reward.explanation = self._explain_reward(reward)
         return reward

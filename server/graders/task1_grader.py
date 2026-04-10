@@ -53,6 +53,6 @@ class Task1Grader(CascadeGrader):
             + bonus.causal_explanation
         )
         neg = bonus.false_positive_penalty + bonus.too_late_penalty
-        bonus.total = max(0.0, min(0.45, pos - neg))
+        bonus.total = max(0.001, min(0.449, pos - neg))
         bonus.explanation = f"task1_terminal_bonus={bonus.total:.3f}"
         return bonus
