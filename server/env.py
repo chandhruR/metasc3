@@ -115,7 +115,7 @@ class CascadeEnvironment:
         reward = self.grader.compute_step_reward(self.community, action, self.step_idx, self.max_steps)
         bonus = self.grader.terminal_task_bonus(self.community, action) if at == ActionType.SUBMIT_REPORT else None
         if bonus:
-            reward.total = max(0.0, min(1.0, reward.total + bonus.total))
+            reward.total = max(0.001, min(0.999, reward.total + bonus.total))
             reward.explanation += f" | {bonus.explanation}"
 
         self.cumulative_reward += reward.total
