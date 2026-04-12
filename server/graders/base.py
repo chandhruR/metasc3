@@ -74,7 +74,7 @@ class CascadeGrader:
             + reward.too_late_penalty
         )
         raw_total = positive - negative
-        reward.total = max(0.001, min(0.999, raw_total))
+        reward.total = max(0.1, min(0.9, raw_total))
         reward.step_reward = reward.total
         reward.explanation = self._explain_reward(reward)
         return reward

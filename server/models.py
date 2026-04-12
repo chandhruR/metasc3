@@ -119,20 +119,20 @@ class CascadeAction(BaseModel):
 
 
 class CascadeReward(BaseModel):
-    total: float = Field(default=0.0, ge=0.0, le=1.0)
+    total: float = Field(default=0.5, ge=0.0, le=1.0)
 
-    cascade_prevention: float = 0.0
-    intervention_precision: float = 0.0
-    community_health: float = 0.0
-    early_detection: float = 0.0
-    causal_explanation: float = 0.0
+    cascade_prevention: float = 0.1
+    intervention_precision: float = 0.1
+    community_health: float = 0.1
+    early_detection: float = 0.1
+    causal_explanation: float = 0.1
 
-    false_positive_penalty: float = 0.0
-    overcorrection_penalty: float = 0.0
-    too_late_penalty: float = 0.0
+    false_positive_penalty: float = 0.1
+    overcorrection_penalty: float = 0.1
+    too_late_penalty: float = 0.1
 
-    step_reward: float = 0.0
-    cumulative_reward: float = 0.0
+    step_reward: float = 0.1
+    cumulative_reward: float = 0.1
     explanation: str = ""
 
 
