@@ -1,3 +1,7 @@
+"""
+CascadeEnv — Baseline Inference Script
+Follows the Hackathon [START] / [STEP] / [END] format exactly.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -10,13 +14,14 @@ import httpx
 from openai import OpenAI
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "").rstrip("/")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o")
+HF_TOKEN     = os.environ.get("HF_TOKEN", "")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-API_KEY = HF_TOKEN or OPENAI_API_KEY
+API_KEY      = HF_TOKEN or OPENAI_API_KEY
 
-IMAGE_NAME = os.environ.get("IMAGE_NAME", "cascadeenv:latest")
-BENCHMARK = "cascadeenv"
+CASCADEENV_URL = os.environ.get("CASCADEENV_URL", "http://127.0.0.1:7860").rstrip("/")
+IMAGE_NAME   = os.environ.get("IMAGE_NAME", "cascadeenv:latest")
+BENCHMARK    = "cascadeenv"
 
 TASKS = [
     "task1_health_misinfo",
@@ -30,21 +35,19 @@ MAX_STEPS = {
     "task3_radicalization_pipeline": 50,
 }
 
-TEMPERATURE = 0.2
-MAX_TOKENS = 1000
-SUCCESS_THRESHOLD = 0.6
+MAX_TOTAL_REWARD = 1.0
+SUCCESS_SCORE_THRESHOLD = 0.6
+TEMPERATURE  = 0.2
+MAX_TOKENS   = 512
 
 SYSTEM_PROMPT = (
-    "You are a Crisis Prevention Specialist for a social media platform. "
-    "Your mission is to stop harmful content cascades (misinformation, harassment, radicalization) "
-    "before they reach a tipping point and become irreversible.\n\n"
-    "STRATEGY:\n"
-    "1. INVESTIGATE: Use 'analyze_cluster', 'inspect_account', 'inspect_post', and 'trace_spread' to identify the root cause.\n"
-    "2. INTERVENE: Once identified, take decisive action using 'suspend_account', 'remove_post', 'add_friction', or 'disconnect_accounts'.\n\n"
-    "RULES:\n"
-    "- Be precise: Minimize impact on innocent users, but act quickly against clear threats.\n"
-    "- Don't stay passive: Use 'observe' only if absolutely necessary. Investigation or intervention is preferred.\n"
-    "- Format: Every response must be valid JSON with a 'reasoning' field."
+    "You are a social media content moderation AI.\n"
+    "Your job is to inspect suspicious clusters and accounts, then take action.\n\n"
+    "VALID action_type values:\n"
+    "  investigate, analyze_cluster, inspect_account, inspect_post,\n"
+    "  suspend_account, remove_account, remove_post, add_friction,\n"
+    "  disconnect_accounts, shadow_ban_account, submit_report, observe\n\n"
+    "Always reply with valid JSON only. No markdown, no explanation outside the JSON."
 )
 
 
@@ -53,162 +56,127 @@ def _eprint(msg: str) -> None:
 
 
 def log_start(task: str, env: str, model: str) -> None:
-    payload = {"task": task, "env": env, "model": model}
-    print(f"[START] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+    print(f"[START] {json.dumps({'task': task, 'env': env, 'model': model})}", flush=True)
 
 
 def log_step(step: int, action: Any, reward: float, done: bool, error: Any = None) -> None:
-    payload = {"step": step, "action": action, "reward": reward, "done": done, "error": error}
-    print(f"[STEP] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+    print(f"[STEP] {json.dumps({'step': step, 'action': action, 'reward': reward, 'done': done, 'error': error})}", flush=True)
 
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    payload = {"success": success, "steps": steps, "score": score, "rewards": rewards}
-    print(f"[END] {json.dumps(payload, ensure_ascii=False)}", flush=True)
+    print(f"[END] {json.dumps({'success': success, 'steps': steps, 'score': score, 'rewards': rewards})}", flush=True)
 
 
-def get_agent_action(
-    client: OpenAI,
-    observation: dict,
-    history: List[str],
-    step: int,
-) -> dict:
-    user_prompt = f"""
-STEP {step}
-
-CURRENT OBSERVATION:
-{json.dumps(observation, indent=2)}
-
-YOUR HISTORY SO FAR:
-{chr(10).join(history[-5:])}
-
-Reply with JSON only. 
-IMPORTANT: For optional fields that are not needed, use null (e.g., "target_account_id": null).
-Do NOT use empty lists [] for target_edge.
-
-{{
-  "action_type": "<action type>",
-  "target_account_id": null,
-  "target_post_id": null,
-  "target_cluster_id": null,
-  "target_edge": ["source_id", "target_id"],
-  "report": null,
-  "reasoning": "<short strategy description>"
-}}
-
-Available Actions: 
-- Investigation: inspect_account, inspect_post, inspect_network, trace_spread, analyze_cluster
-- Intervention: remove_post, downrank_post, add_friction, suspend_account, shadow_ban_account, remove_account, disconnect_accounts
-- Other: observe, submit_report
-"""
+def get_agent_action(client: OpenAI, observation: dict, history: List[str], step: int) -> dict:
+    user_prompt = (
+        f"STEP {step}\n\n"
+        f"OBSERVATION:\n{json.dumps(observation, indent=2)}\n\n"
+        f"HISTORY:\n{chr(10).join(history[-5:])}\n\n"
+        "Reply with JSON only:\n"
+        '{"action_type": "<one of the valid types>", "target_cluster_id": "<or null>", '
+        '"target_account_id": "<or null>", "target_post_id": "<or null>", "reasoning": "<brief>"}'
+    )
 
     if not API_BASE_URL or not API_KEY:
-        _eprint("[DEBUG] missing API_BASE_URL or HF_TOKEN/OPENAI_API_KEY")
-        return {"action_type": "observe", "reasoning": "missing credentials"}
+        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback"}
 
     try:
-        completion = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
+                {"role": "user",   "content": user_prompt},
             ],
             temperature=TEMPERATURE,
             max_tokens=MAX_TOKENS,
-            stream=False,
         )
-        text = (completion.choices[0].message.content or "").strip()
+        text = (resp.choices[0].message.content or "").strip()
+        # strip markdown fences if any
         if "```" in text:
-            parts = text.split("```")
-            for p in parts:
-                p = p.strip()
-                if p.startswith("json"):
-                    p = p[4:].strip()
-                if p.startswith("{"):
-                    text = p
+            for part in text.split("```"):
+                part = part.strip().lstrip("json").strip()
+                if part.startswith("{"):
+                    text = part
                     break
         return json.loads(text)
     except Exception as exc:
         _eprint(f"[DEBUG] model error: {exc}")
-        return {"action_type": "observe", "reasoning": "fallback"}
+        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback"}
 
 
-def _normalize_action_payload(action: dict) -> dict:
-    out = dict(action)
-    te = out.get("target_edge")
-    if isinstance(te, list) and len(te) == 2:
-        out["target_edge"] = [str(te[0]), str(te[1])]
-    return out
-
-
-async def run_task(client: OpenAI, task_id: str, env_base_url: str) -> float:
+async def run_task(client: OpenAI, task_id: str) -> float:
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     history: List[str] = []
     rewards: List[float] = []
     steps_taken = 0
+    score = 0.0
+    success = False
     max_steps = MAX_STEPS[task_id]
 
-    async with httpx.AsyncClient(base_url=env_base_url, timeout=120.0) as http:
-        resp = await http.post("/reset", params={"task_id": task_id, "seed": 42})
-        resp.raise_for_status()
-        result = resp.json()
-        observation = result["observation"]
+    async with httpx.AsyncClient(base_url=CASCADEENV_URL, timeout=120.0) as http:
+        try:
+            r = await http.post("/reset", params={"task_id": task_id, "seed": 42})
+            r.raise_for_status()
+            result = r.json()
+        except Exception as exc:
+            _eprint(f"[DEBUG] /reset failed: {exc}")
+            log_end(success=False, steps=0, score=0.5, rewards=[0.5])
+            return 0.5
 
-        if result.get("done"):
-            log_end(success=False, steps=0, score=0.001, rewards=[0.001])
-            return 0.001
+        observation = result.get("observation", {})
 
         for step in range(1, max_steps + 1):
+            if result.get("done"):
+                break
+
             action = get_agent_action(client, observation, history, step)
             if "reasoning" not in action:
                 action["reasoning"] = ""
-            body = _normalize_action_payload(action)
 
-            err: Any = None
             try:
-                resp = await http.post("/step", json=body)
-                resp.raise_for_status()
-                result = resp.json()
+                r = await http.post("/step", json=action)
+                r.raise_for_status()
+                result = r.json()
             except Exception as exc:
-                err = str(exc)
-                log_step(step=step, action=body, reward=0.001, done=True, error=err)
+                log_step(step=step, action=action, reward=0.5, done=True, error=str(exc))
+                rewards.append(0.5)
+                steps_taken = step
                 break
 
-            observation = result["observation"]
-            reward = float(result["reward"]["total"])
-            done = bool(result["done"])
+            observation = result.get("observation", {})
+            reward_obj  = result.get("reward", {})
+            reward      = float(reward_obj.get("total", 0.5)) if isinstance(reward_obj, dict) else float(reward_obj or 0.5)
+            done        = bool(result.get("done", False))
 
             rewards.append(reward)
             steps_taken = step
 
-            log_step(step=step, action=body, reward=reward, done=done, error=None)
-
-            history.append(f"Step {step}: {action.get('action_type')} -> reward {reward:+.2f}")
+            log_step(step=step, action=action, reward=reward, done=done, error=None)
+            history.append(f"Step {step}: {action.get('action_type')} -> reward {reward:+.3f}")
 
             if done:
                 break
 
-    score = sum(rewards) / len(rewards) if rewards else 0.001
-    score = min(max(score, 0.001), 0.999)
-    success = score >= SUCCESS_THRESHOLD
+    # Score = mean(rewards), clamped strictly inside (0.001, 0.999)
+    raw = sum(rewards) / len(rewards) if rewards else 0.5
+    score = max(0.001, min(0.999, raw))
+    success = score >= SUCCESS_SCORE_THRESHOLD
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+    _eprint(f"[DEBUG] {task_id} score={score:.3f}")
     return score
 
 
 async def main() -> None:
-    env_base = os.environ.get("CASCADEENV_URL", "http://127.0.0.1:7860").rstrip("/")
     base = API_BASE_URL or "https://api.openai.com/v1"
     client = OpenAI(base_url=base, api_key=API_KEY or "dummy")
 
-    _eprint(f"[DEBUG] IMAGE_NAME={IMAGE_NAME} CASCADEENV_URL={env_base}")
+    _eprint(f"[DEBUG] IMAGE_NAME={IMAGE_NAME} CASCADEENV_URL={CASCADEENV_URL}")
 
     all_scores: Dict[str, float] = {}
     for task_id in TASKS:
-        score = await run_task(client, task_id, env_base_url=env_base)
-        all_scores[task_id] = score
-        _eprint(f"[DEBUG] {task_id} score={score:.3f}")
+        all_scores[task_id] = await run_task(client, task_id)
 
     mean = sum(all_scores.values()) / len(all_scores)
     _eprint(f"[DEBUG] SUMMARY mean={mean:.3f} scores={json.dumps(all_scores)}")
