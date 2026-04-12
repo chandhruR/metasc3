@@ -113,8 +113,8 @@ class CascadeAction(BaseModel):
     target_account_id: Optional[str] = None
     target_post_id: Optional[str] = None
     target_cluster_id: Optional[str] = None
-    target_edge: Optional[Tuple[str, str]] = None
-    report: Optional[Dict[str, Any]] = None
+    target_edge: Optional[Any] = None
+    report: Optional[Any] = None
     reasoning: str = ""
 
 

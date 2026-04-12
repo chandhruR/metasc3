@@ -112,24 +112,40 @@ class CascadeEnvironment:
 
         if at != ActionType.SUBMIT_REPORT:
             self.community.tick(self.step_idx)
+            
         reward = self.grader.compute_step_reward(self.community, action, self.step_idx, self.max_steps)
         bonus = self.grader.terminal_task_bonus(self.community, action) if at == ActionType.SUBMIT_REPORT else None
+
+        scaled_step = float(reward.total) / max(1, self.max_steps)
+        scaled_bonus = float(bonus.total) if bonus else 0.0
+        
+        target_cum = self.cumulative_reward + scaled_step + scaled_bonus
+        target_cum = max(0.001, min(0.999, target_cum))
+        
+        delta = target_cum - self.cumulative_reward
+        reward.total = delta
+        
         if bonus:
-            reward.total = max(0.001, min(0.999, reward.total + bonus.total))
             reward.explanation += f" | {bonus.explanation}"
 
-        self.cumulative_reward += reward.total
+        self.cumulative_reward = target_cum
         reward.cumulative_reward = self.cumulative_reward
         self.actions_taken.append(at.value)
 
         if at == ActionType.SUBMIT_REPORT:
             done = True
             self._grader_scores["terminal_bonus"] = float(bonus.total) if bonus else 0.0
+            
         if self.step_idx >= self.max_steps:
             done = True
+            
         if self.community.cascade_probability >= 0.97 and self.community.tipping_point_reached:
             done = True
             info["terminated_reason"] = "cascade_critical"
+            
+        if done:
+            info["score"] = self.cumulative_reward
+            self._grader_scores["task_score"] = self.cumulative_reward
 
         obs = self._build_observation(
             last,
