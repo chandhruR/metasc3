@@ -109,7 +109,7 @@ class CommunityObservation(BaseModel):
 
 
 class CascadeAction(BaseModel):
-    action_type: ActionType
+    action_type: str
     target_account_id: Optional[str] = None
     target_post_id: Optional[str] = None
     target_cluster_id: Optional[str] = None

@@ -73,91 +73,107 @@ class CascadeEnvironment:
         if not self.initialized or self.community is None:
             raise RuntimeError("Environment not initialized; call reset() first")
 
-        self.step_idx += 1
-        last: Dict[str, Any] = {}
-        inspected_account = None
-        inspected_post = None
-        network_neighborhood = None
-        spread_trace = None
-        cluster_analysis = None
-
-        at = action.action_type
-
-        if at == ActionType.INSPECT_ACCOUNT and action.target_account_id:
-            inspected_account = self._snapshot_account(action.target_account_id)
-            last = {"ok": True, "detail": "inspected_account", "account_id": action.target_account_id}
-        elif at == ActionType.INSPECT_POST and action.target_post_id:
-            inspected_post = self._snapshot_post(action.target_post_id)
-            last = {"ok": True, "detail": "inspected_post", "post_id": action.target_post_id}
-        elif at == ActionType.INSPECT_NETWORK and action.target_account_id:
-            network_neighborhood = self._neighborhood(action.target_account_id)
-            last = {"ok": True, "detail": "inspected_network"}
-        elif at == ActionType.TRACE_SPREAD and action.target_post_id:
-            spread_trace = SpreadSimulator.trace_from_post(self.community, action.target_post_id)
-            last = {"ok": True, "detail": "trace_spread"}
-        elif at == ActionType.ANALYZE_CLUSTER and action.target_cluster_id:
-            cluster_analysis = self._analyze_cluster(action.target_cluster_id)
-            last = {"ok": True, "detail": "analyze_cluster"}
-        elif at == ActionType.SUBMIT_REPORT:
-            last = self.community.apply_intervention(action)
-        else:
-            last = self.community.apply_intervention(action)
-            if last.get("ok") and at not in (ActionType.OBSERVE,):
-                self.interventions_made.append(
-                    {"step": self.step_idx, "action": at.value, "targets": action.model_dump()}
-                )
-
-        done = False
-        info: Dict[str, Any] = {"last_action": last}
-
-        if at != ActionType.SUBMIT_REPORT:
-            self.community.tick(self.step_idx)
+        try:
+            self.step_idx += 1
+            last: Dict[str, Any] = {}
+            inspected_account = None
+            inspected_post = None
+            network_neighborhood = None
+            spread_trace = None
+            cluster_analysis = None
+    
+            at = action.action_type
+    
+            if at == ActionType.INSPECT_ACCOUNT and action.target_account_id:
+                inspected_account = self._snapshot_account(action.target_account_id)
+                last = {"ok": True, "detail": "inspected_account", "account_id": action.target_account_id}
+            elif at == ActionType.INSPECT_POST and action.target_post_id:
+                inspected_post = self._snapshot_post(action.target_post_id)
+                last = {"ok": True, "detail": "inspected_post", "post_id": action.target_post_id}
+            elif at == ActionType.INSPECT_NETWORK and action.target_account_id:
+                network_neighborhood = self._neighborhood(action.target_account_id)
+                last = {"ok": True, "detail": "inspected_network"}
+            elif at == ActionType.TRACE_SPREAD and action.target_post_id:
+                spread_trace = SpreadSimulator.trace_from_post(self.community, action.target_post_id)
+                last = {"ok": True, "detail": "trace_spread"}
+            elif at == ActionType.ANALYZE_CLUSTER and action.target_cluster_id:
+                cluster_analysis = self._analyze_cluster(action.target_cluster_id)
+                last = {"ok": True, "detail": "analyze_cluster"}
+            elif at == ActionType.SUBMIT_REPORT:
+                last = self.community.apply_intervention(action)
+            else:
+                last = self.community.apply_intervention(action)
+                if last.get("ok") and at not in (ActionType.OBSERVE,):
+                    self.interventions_made.append(
+                        {"step": self.step_idx, "action": getattr(at, 'value', str(at)), "targets": action.model_dump()}
+                    )
+    
+            done = False
+            info: Dict[str, Any] = {"last_action": last}
+    
+            if at != ActionType.SUBMIT_REPORT:
+                self.community.tick(self.step_idx)
+                
+            reward = self.grader.compute_step_reward(self.community, action, self.step_idx, self.max_steps)
+            bonus = self.grader.terminal_task_bonus(self.community, action) if at == ActionType.SUBMIT_REPORT else None
+    
+            scaled_step = float(reward.total) / max(1, self.max_steps)
+            scaled_bonus = float(bonus.total) if bonus else 0.0
             
-        reward = self.grader.compute_step_reward(self.community, action, self.step_idx, self.max_steps)
-        bonus = self.grader.terminal_task_bonus(self.community, action) if at == ActionType.SUBMIT_REPORT else None
-
-        scaled_step = float(reward.total) / max(1, self.max_steps)
-        scaled_bonus = float(bonus.total) if bonus else 0.0
-        
-        target_cum = self.cumulative_reward + scaled_step + scaled_bonus
-        target_cum = max(0.001, min(0.999, target_cum))
-        
-        delta = target_cum - self.cumulative_reward
-        reward.total = delta
-        
-        if bonus:
-            reward.explanation += f" | {bonus.explanation}"
-
-        self.cumulative_reward = target_cum
-        reward.cumulative_reward = self.cumulative_reward
-        self.actions_taken.append(at.value)
-
-        if at == ActionType.SUBMIT_REPORT:
-            done = True
-            self._grader_scores["terminal_bonus"] = float(bonus.total) if bonus else 0.0
+            target_cum = self.cumulative_reward + scaled_step + scaled_bonus
+            target_cum = max(0.001, min(0.999, target_cum))
             
-        if self.step_idx >= self.max_steps:
-            done = True
+            delta = target_cum - self.cumulative_reward
+            reward.total = delta
             
-        if self.community.cascade_probability >= 0.97 and self.community.tipping_point_reached:
-            done = True
-            info["terminated_reason"] = "cascade_critical"
+            if bonus:
+                reward.explanation += f" | {bonus.explanation}"
+    
+            self.cumulative_reward = target_cum
+            reward.cumulative_reward = self.cumulative_reward
+            self.actions_taken.append(getattr(at, 'value', str(at)))
+    
+            if at == ActionType.SUBMIT_REPORT:
+                done = True
+                self._grader_scores["terminal_bonus"] = float(bonus.total) if bonus else 0.0
+                
+            if self.step_idx >= self.max_steps:
+                done = True
+                
+            if self.community.cascade_probability >= 0.97 and self.community.tipping_point_reached:
+                done = True
+                info["terminated_reason"] = "cascade_critical"
+                
+            if done:
+                info["score"] = self.cumulative_reward
+                self._grader_scores["task_score"] = self.cumulative_reward
+    
+            obs = self._build_observation(
+                last,
+                {
+                    "inspected_account": inspected_account,
+                    "inspected_post": inspected_post,
+                    "network_neighborhood": network_neighborhood,
+                    "spread_trace": spread_trace,
+                    "cluster_analysis": cluster_analysis,
+                },
+            )
+            return StepResult(observation=obs, reward=reward, done=done, info=info)
             
-        if done:
-            info["score"] = self.cumulative_reward
+        except Exception as e:
+            # Failsafe gracefully returns a bounded score instead of a 500 error
+            import traceback
+            traceback.print_exc()
+            target_cum = max(0.001, min(0.999, self.cumulative_reward + 0.001))
+            delta = target_cum - self.cumulative_reward
+            rw = CascadeReward(total=delta, explanation=f"Failsafe triggered: {str(e)[:50]}")
+            self.cumulative_reward = target_cum
+            rw.cumulative_reward = target_cum
+            
+            obs = self._build_observation({"error": str(e)}, {})
+            info = {"error": str(e), "score": self.cumulative_reward}
             self._grader_scores["task_score"] = self.cumulative_reward
-
-        obs = self._build_observation(
-            last,
-            {
-                "inspected_account": inspected_account,
-                "inspected_post": inspected_post,
-                "network_neighborhood": network_neighborhood,
-                "spread_trace": spread_trace,
-                "cluster_analysis": cluster_analysis,
-            },
-        )
-        return StepResult(observation=obs, reward=reward, done=done, info=info)
+            return StepResult(observation=obs, reward=rw, done=True, info=info)
 
     def state(self) -> StateResult:
         if not self.initialized or self.community is None:
