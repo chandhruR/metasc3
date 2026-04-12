@@ -16,8 +16,13 @@ class TriageTask:
         self.max_steps = max_steps
         self.step_idx = 0
         self.done = False
-        self.cumulative_sum = 0.0  # Sum of rewards given so far
+        self.initial_baseline = 0.10 # Guaranteed floor
+        self.cumulative_step_sum = 0.0 # Sum of awards given in /step
         self.system_log = ["Env initialized."]
+
+    def get_total_score(self):
+        # The sum of step rewards + our baseline
+        return max(0.01, min(0.99, self.initial_baseline + self.cumulative_step_sum))
 
     def build_obs(self):
         return CommunityObservation(
@@ -46,8 +51,7 @@ manager = EnvManager()
 @app.post("/reset", response_model=ResetResult)
 def reset_env(task_id: str = "task1_health_misinfo", seed: int = 42):
     obs = manager.reset(task_id)
-    # Return 0.1 as the 'starting' score in info, but sum(rewards) starts at 0
-    return ResetResult(observation=obs, info={"score": 0.1})
+    return ResetResult(observation=obs, info={"score": 0.10})
 
 @app.post("/step", response_model=StepResult)
 def step_env(action: dict):
@@ -56,80 +60,65 @@ def step_env(action: dict):
         
     t = manager.current_task
     
-    # If already done, return minimal reward but keep it in range
     if t.done:
         return StepResult(
             observation=t.build_obs(),
             reward=CascadeReward(total=0.01),
             done=True,
-            info={"score": max(0.01, min(0.99, t.cumulative_sum))}
+            info={"score": t.get_total_score()}
         )
         
     try:
+        # Pydantic validation
         act = CascadeAction(**action)
         at = act.action_type.lower()
         t.step_idx += 1
         
-        # We want the SUM of all rewards in the episode to be between 0.1 and 0.95
-        # Total budget for the entire episode
-        FINAL_TARGET = 0.85 
+        # Budget left before reaching 0.90
+        remaining_budget = 0.90 - t.get_total_score()
         
-        # How much is left to give?
-        remaining = FINAL_TARGET - t.cumulative_sum
-        
-        # Decide how much of the remaining budget to give in this step
         if "suspend" in at or "remove" in at:
-            # Intervention: take a large chunk of what's left
-            increment = remaining * 0.8
-            t.system_log.append(f"INTERVENTION: {at} successful.")
+            increment = max(0.01, remaining_budget * 0.8)
+            t.system_log.append("Intervention successful.")
             t.done = True
         elif "report" in at:
-            increment = remaining * 0.5
-            t.system_log.append(f"Report submitted: {at}")
+            increment = max(0.01, remaining_budget * 0.5)
+            t.system_log.append("Report submitted.")
             t.done = True
         elif any(x in at for x in ["investigate", "analyze", "inspect", "trace"]):
-            # Progress: take a small fraction (e.g. 5% of remaining)
-            # but ensure it's at least 0.01 so it's measurable
-            increment = max(0.01, remaining * (1.0 / t.max_steps))
-            t.system_log.append(f"Investigation: {at} yielded data.")
+            increment = max(0.01, remaining_budget * (1.5 / t.max_steps))
+            t.system_log.append("Investigation yielded data.")
         else:
-            # Baseline: minimal progress
             increment = 0.01
-            t.system_log.append(f"Action: {at} logged.")
+            t.system_log.append(f"Action {at} logged.")
 
-        # FINAL SAFETY CLAMP: 
-        # Total sum must NEVER exceed 0.99
-        if t.cumulative_sum + increment > 0.99:
-            increment = 0.99 - t.cumulative_sum
+        # Ensure incremental sum doesn't cause total to exceed 0.99
+        if t.get_total_score() + increment > 0.99:
+            increment = 0.99 - t.get_total_score()
             
-        # Total sum must NEVER be less than 0.001 per step
-        increment = max(0.001, increment)
+        increment = max(0.001, round(increment, 4))
         
-        t.cumulative_sum += increment
+        t.cumulative_step_sum += increment
         
         if t.step_idx >= t.max_steps:
             t.done = True
             
-        info = {"score": t.cumulative_sum}
-        
         return StepResult(
             observation=t.build_obs(),
-            reward=CascadeReward(total=increment, explanation=f"Step {t.step_idx}: {at}"),
+            reward=CascadeReward(total=increment),
             done=t.done,
-            info=info
+            info={"score": t.get_total_score()}
         )
         
     except Exception as e:
         t.step_idx += 1
         t.done = True
-        # Failsafe: ensures we return a valid dict if sum was empty
-        reward_val = max(0.01, 0.5 - t.cumulative_sum)
-        t.cumulative_sum += reward_val
+        t.cumulative_step_sum += 0.01
         return StepResult(
             observation=t.build_obs(),
-            reward=CascadeReward(total=reward_val, explanation=str(e)[:50]),
+            reward=CascadeReward(total=0.01),
             done=True,
-            info={"score": t.cumulative_sum, "error": str(e)}
+            info={"score": t.get_total_score(), "error": str(e)}
         )
 
 @app.get("/state", response_model=StateResult)
@@ -140,7 +129,7 @@ def state_env():
     return StateResult(
         observation=t.build_obs(),
         task_id=t.task_id,
-        grader_scores={"task_score": t.cumulative_sum}
+        grader_scores={"score": t.get_total_score(), "task_score": t.get_total_score()}
     )
     
 @app.get("/validate", response_model=Dict[str, str])
