@@ -78,7 +78,7 @@ def get_agent_action(client: OpenAI, observation: dict, history: List[str], step
     )
 
     if not API_BASE_URL or not API_KEY:
-        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback"}
+        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback credentials missing"}
 
     try:
         resp = client.chat.completions.create(
@@ -91,7 +91,6 @@ def get_agent_action(client: OpenAI, observation: dict, history: List[str], step
             max_tokens=MAX_TOKENS,
         )
         text = (resp.choices[0].message.content or "").strip()
-        # strip markdown fences if any
         if "```" in text:
             for part in text.split("```"):
                 part = part.strip().lstrip("json").strip()
@@ -101,7 +100,7 @@ def get_agent_action(client: OpenAI, observation: dict, history: List[str], step
         return json.loads(text)
     except Exception as exc:
         _eprint(f"[DEBUG] model error: {exc}")
-        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback"}
+        return {"action_type": "analyze_cluster", "target_cluster_id": "skeptics", "reasoning": "fallback after model error"}
 
 
 async def run_task(client: OpenAI, task_id: str) -> float:
@@ -121,8 +120,8 @@ async def run_task(client: OpenAI, task_id: str) -> float:
             result = r.json()
         except Exception as exc:
             _eprint(f"[DEBUG] /reset failed: {exc}")
-            log_end(success=False, steps=0, score=0.5, rewards=[0.5])
-            return 0.5
+            log_end(success=False, steps=0, score=0.1, rewards=[])
+            return 0.1
 
         observation = result.get("observation", {})
 
@@ -139,14 +138,15 @@ async def run_task(client: OpenAI, task_id: str) -> float:
                 r.raise_for_status()
                 result = r.json()
             except Exception as exc:
-                log_step(step=step, action=action, reward=0.5, done=True, error=str(exc))
-                rewards.append(0.5)
+                err_reward = 0.01
+                log_step(step=step, action=action, reward=err_reward, done=True, error=str(exc))
+                rewards.append(err_reward)
                 steps_taken = step
                 break
 
             observation = result.get("observation", {})
             reward_obj  = result.get("reward", {})
-            reward      = float(reward_obj.get("total", 0.5)) if isinstance(reward_obj, dict) else float(reward_obj or 0.5)
+            reward      = float(reward_obj.get("total", 0.01)) if isinstance(reward_obj, dict) else float(reward_obj or 0.01)
             done        = bool(result.get("done", False))
 
             rewards.append(reward)
@@ -158,9 +158,9 @@ async def run_task(client: OpenAI, task_id: str) -> float:
             if done:
                 break
 
-    # Score = mean(rewards), clamped strictly inside (0.001, 0.999)
-    raw = sum(rewards) / len(rewards) if rewards else 0.5
-    score = max(0.001, min(0.999, raw))
+    # Score = sum(rewards), logically capped strictly inside (0.01, 0.99)
+    raw = sum(rewards)
+    score = max(0.01, min(0.99, raw))
     success = score >= SUCCESS_SCORE_THRESHOLD
 
     log_end(success=success, steps=steps_taken, score=score, rewards=rewards)

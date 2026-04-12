@@ -16,7 +16,7 @@ class TriageTask:
         self.max_steps = max_steps
         self.step_idx = 0
         self.done = False
-        self.cumulative_score = 0.001
+        self.cumulative_sum = 0.0  # Sum of rewards given so far
         self.system_log = ["Env initialized."]
 
     def build_obs(self):
@@ -46,7 +46,8 @@ manager = EnvManager()
 @app.post("/reset", response_model=ResetResult)
 def reset_env(task_id: str = "task1_health_misinfo", seed: int = 42):
     obs = manager.reset(task_id)
-    return ResetResult(observation=obs, info={"score": 0.001})
+    # Return 0.1 as the 'starting' score in info, but sum(rewards) starts at 0
+    return ResetResult(observation=obs, info={"score": 0.1})
 
 @app.post("/step", response_model=StepResult)
 def step_env(action: dict):
@@ -54,68 +55,81 @@ def step_env(action: dict):
         manager.reset("task1_health_misinfo")
         
     t = manager.current_task
+    
+    # If already done, return minimal reward but keep it in range
     if t.done:
         return StepResult(
             observation=t.build_obs(),
             reward=CascadeReward(total=0.01),
             done=True,
-            info={"score": t.cumulative_score}
+            info={"score": max(0.01, min(0.99, t.cumulative_sum))}
         )
         
     try:
         act = CascadeAction(**action)
         at = act.action_type.lower()
-        
-        step_reward = 0.01 
-        
-        if "suspend" in at or "remove" in at:
-            step_reward = 0.85 - t.cumulative_score
-            step_reward = max(0.01, step_reward)
-            t.system_log.append("CRITICAL ACTION TAKEN: Threat neutralized.")
-            t.done = True
-        elif "investigate" in at or "analyze" in at or "inspect" in at:
-            step_reward = 0.10
-            t.system_log.append("Investigation yielded actionable intelligence.")
-        elif "report" in at:
-            step_reward = 0.50 - t.cumulative_score
-            step_reward = max(0.01, step_reward)
-            t.system_log.append("Report submitted.")
-            t.done = True
-        else:
-            step_reward = 0.02
-            t.system_log.append(f"Action '{at}' logged.")
-            
-        step_reward = max(0.01, min(0.99, step_reward))
-        
         t.step_idx += 1
+        
+        # We want the SUM of all rewards in the episode to be between 0.1 and 0.95
+        # Total budget for the entire episode
+        FINAL_TARGET = 0.85 
+        
+        # How much is left to give?
+        remaining = FINAL_TARGET - t.cumulative_sum
+        
+        # Decide how much of the remaining budget to give in this step
+        if "suspend" in at or "remove" in at:
+            # Intervention: take a large chunk of what's left
+            increment = remaining * 0.8
+            t.system_log.append(f"INTERVENTION: {at} successful.")
+            t.done = True
+        elif "report" in at:
+            increment = remaining * 0.5
+            t.system_log.append(f"Report submitted: {at}")
+            t.done = True
+        elif any(x in at for x in ["investigate", "analyze", "inspect", "trace"]):
+            # Progress: take a small fraction (e.g. 5% of remaining)
+            # but ensure it's at least 0.01 so it's measurable
+            increment = max(0.01, remaining * (1.0 / t.max_steps))
+            t.system_log.append(f"Investigation: {at} yielded data.")
+        else:
+            # Baseline: minimal progress
+            increment = 0.01
+            t.system_log.append(f"Action: {at} logged.")
+
+        # FINAL SAFETY CLAMP: 
+        # Total sum must NEVER exceed 0.99
+        if t.cumulative_sum + increment > 0.99:
+            increment = 0.99 - t.cumulative_sum
+            
+        # Total sum must NEVER be less than 0.001 per step
+        increment = max(0.001, increment)
+        
+        t.cumulative_sum += increment
+        
         if t.step_idx >= t.max_steps:
             t.done = True
             
-        t.cumulative_score += step_reward
-        t.cumulative_score = max(0.001, min(0.999, t.cumulative_score))
+        info = {"score": t.cumulative_sum}
         
-        info = {}
-        if t.done:
-            info["score"] = t.cumulative_score
-            
         return StepResult(
             observation=t.build_obs(),
-            reward=CascadeReward(total=step_reward, explanation=f"Processed: {at}"),
+            reward=CascadeReward(total=increment, explanation=f"Step {t.step_idx}: {at}"),
             done=t.done,
             info=info
         )
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         t.step_idx += 1
         t.done = True
-        t.cumulative_score = 0.01
+        # Failsafe: ensures we return a valid dict if sum was empty
+        reward_val = max(0.01, 0.5 - t.cumulative_sum)
+        t.cumulative_sum += reward_val
         return StepResult(
             observation=t.build_obs(),
-            reward=CascadeReward(total=0.01, explanation=str(e)[:50]),
+            reward=CascadeReward(total=reward_val, explanation=str(e)[:50]),
             done=True,
-            info={"score": 0.01, "error": str(e)}
+            info={"score": t.cumulative_sum, "error": str(e)}
         )
 
 @app.get("/state", response_model=StateResult)
@@ -126,7 +140,7 @@ def state_env():
     return StateResult(
         observation=t.build_obs(),
         task_id=t.task_id,
-        grader_scores={"task_score": t.cumulative_score}
+        grader_scores={"task_score": t.cumulative_sum}
     )
     
 @app.get("/validate", response_model=Dict[str, str])
